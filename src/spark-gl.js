@@ -430,6 +430,29 @@ export class SparkGL {
   }
 
   /**
+   * Restate `cacheTempResources.minSize` after construction.
+   *
+   * The create-time option cannot serve a session that outlives what it encodes: one encoder
+   * driving many models knows the DEVICE's limits when it is built and the CONTENT's only
+   * when a load starts. Sizing from the device cap instead is the expensive mistake: a cap of
+   * 8192 against assets that top out at 4096 allocates 4x the scratch it needs.
+   *
+   * Since #53 this floors the BLOCK-level resources only; the source copy is allocated at the
+   * image's exact size and deliberately ignores it.
+   *
+   * Applies to the next allocation; it deliberately does not reallocate what already exists,
+   * since an encode may be reading it. Clamped to MAX_TEXTURE_SIZE like the constructor.
+   *
+   * @param {number} size - Minimum width/height, in texels, for cached resources. 0 disables.
+   */
+  setCacheMinSize(size) {
+    if (!Number.isInteger(size) || size < 0) {
+      throw new Error(`cacheMinSize must be a non-negative integer, got ${size}`)
+    }
+    this.#cacheMinSize = Math.min(size, this.#gl.getParameter(this.#gl.MAX_TEXTURE_SIZE))
+  }
+
+  /**
    * Free cached temporary resources used by encodeTexture.
    * Call this when you're done encoding textures to free up GPU memory.
    */

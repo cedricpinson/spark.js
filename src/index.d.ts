@@ -390,6 +390,16 @@ export class SparkGL {
    * Call this when you're done encoding textures to free up GPU memory.
    */
   freeTempResources(): void
+
+  /**
+   * Restate `cacheTempResources.minSize` after construction.
+   *
+   * The create-time option cannot serve a session that outlives what it encodes: one encoder
+   * driving many models knows the device's limits when it is built and the content's only
+   * when a load starts. Applies to the next allocation; it does not reallocate what already
+   * exists. Clamped to `MAX_TEXTURE_SIZE`. `0` disables the minimum.
+   */
+  setCacheMinSize(size: number): void
 }
 
 export default Spark

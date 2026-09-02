@@ -317,10 +317,15 @@ export class SparkGL {
   #cachedTexture16Width = 0
   #cachedTexture16Height = 0
   #cachedFbo = null
-  #cachedSrcTexture = null // RGBA8 copy of the source image
-  #cachedSrcWidth = 0
-  #cachedSrcHeight = 0
-  #cachedSrcMipLevelCount = 0
+  /**
+   * RGBA8 copies of the source image, one per `WxHxLevels`.
+   *
+   * A Map rather than a single slot: reuse requires an exact size match (see `encodeTexture`),
+   * and a single slot therefore reallocates on every change of size. Keyed on the level count
+   * as well because storage is immutable, so a texture allocated with one level cannot serve
+   * an encode that needs more.
+   */
+  #srcPool = new Map()
 
   constructor(gl, options = {}) {
     if (!gl) {
@@ -484,13 +489,10 @@ export class SparkGL {
       this.#cachedFbo = null
     }
 
-    if (this.#cachedSrcTexture) {
-      gl.deleteTexture(this.#cachedSrcTexture)
-      this.#cachedSrcTexture = null
-      this.#cachedSrcWidth = 0
-      this.#cachedSrcHeight = 0
-      this.#cachedSrcMipLevelCount = 0
+    for (const tex of this.#srcPool.values()) {
+      gl.deleteTexture(tex)
     }
+    this.#srcPool.clear()
   }
 
   #isFormatSupported(format) {
@@ -725,34 +727,36 @@ export class SparkGL {
       gl.bindTexture(gl.TEXTURE_2D, srcTexture)
       savedBaseLevel = gl.getTexParameter(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL)
     } else {
-      // Create or reuse input texture. A cached texture is only reused when it has exactly the
-      // same size as the image: generateMipmap and the encoders read the whole texture (edge
-      // blocks and mip filters fetch past the image extent), so a larger texture would bleed
-      // the previous image into the result. See https://github.com/Ludicon/spark.js/issues/42.
-      const needsSrcRealloc =
-        !cacheTempResources ||
-        !this.#cachedSrcTexture ||
-        this.#cachedSrcWidth !== width ||
-        this.#cachedSrcHeight !== height ||
-        this.#cachedSrcMipLevelCount < encodedMipmapCount
+      // Create or reuse input texture. A cached texture is only reused by an image of EXACTLY
+      // the same size: generateMipmap and the encoders read the whole texture (edge blocks and
+      // mip filters fetch past the image extent), so a larger one would bleed the previous
+      // image into the result. See https://github.com/Ludicon/spark.js/issues/42.
+      //
+      // One entry PER SIZE rather than one entry total. A single slot is correct but pays a
+      // reallocation on every change of size, and a caller encoding a model's textures meets
+      // its sizes interleaved rather than grouped: on a 33-texture asset with 10 distinct
+      // sizes that is 30 allocations against 4 for a caller whose textures are all one size.
+      // One texture per size makes the count follow the number of DISTINCT sizes, a property
+      // of the content, instead of the number of size CHANGES, which is only a property of the
+      // order they happen to arrive in.
+      //
+      // The cost is that more than one source copy is retained at a time, bounded by the set
+      // of sizes the caller actually encodes. `freeTempResources()` still drops all of them.
+      const allocMipLevelCount = Math.max(encodedMipmapCount, this.#cacheAllocateMipmaps ? fullMipmapCount(width, height) : 1)
+      const srcKey = `${width}x${height}x${allocMipLevelCount}`
 
-      if (!needsSrcRealloc) {
-        srcTexture = this.#cachedSrcTexture
+      srcTexture = cacheTempResources ? this.#srcPool.get(srcKey) : undefined
+      if (srcTexture) {
+        // Already has immutable storage of exactly this shape, so texStorage2D is skipped: a
+        // second call on the same texture is INVALID_OPERATION and a silent no-op, and it
+        // would leave that error in the context's shared queue for whoever reads it next.
         gl.bindTexture(gl.TEXTURE_2D, srcTexture)
       } else {
-        if (cacheTempResources && this.#cachedSrcTexture) {
-          gl.deleteTexture(this.#cachedSrcTexture)
-        }
-        // When caching, honor the mipmap allocation hint (minSize does not apply, see above).
-        const allocMipLevelCount = Math.max(encodedMipmapCount, this.#cacheAllocateMipmaps ? fullMipmapCount(width, height) : 1)
         srcTexture = gl.createTexture()
         gl.bindTexture(gl.TEXTURE_2D, srcTexture)
         gl.texStorage2D(gl.TEXTURE_2D, allocMipLevelCount, gl.RGBA8, width, height)
         if (cacheTempResources) {
-          this.#cachedSrcTexture = srcTexture
-          this.#cachedSrcWidth = width
-          this.#cachedSrcHeight = height
-          this.#cachedSrcMipLevelCount = allocMipLevelCount
+          this.#srcPool.set(srcKey, srcTexture)
         }
       }
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)

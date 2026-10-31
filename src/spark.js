@@ -669,21 +669,20 @@ class Spark {
     const inputFormat = options.input_bgra ? "bgra8unorm" : "rgba8unorm"
 
     // Compatibility mode forbits multi-format views, so we do not alias and rely on sRGBManual in the shader.
+    // Always declare the -srgb view: the input texture may be cached and reused by a later encode
+    // whose srgb flag differs (the cache key does not include it).
     const inputViewFormats = this.#compatibilityMode
       ? undefined
       : options.input_bgra
-        ? srgb
-          ? ["bgra8unorm", "bgra8unorm-srgb"]
-          : ["bgra8unorm"]
-        : srgb
-          ? ["rgba8unorm", "rgba8unorm-srgb"]
-          : ["rgba8unorm"]
+        ? ["bgra8unorm", "bgra8unorm-srgb"]
+        : ["rgba8unorm", "rgba8unorm-srgb"]
 
     const needsProcessing = options.flipY || width != srcWidth || height != srcHeight
 
-    if (!needsProcessing && !(image instanceof GPUTexture)) {
-      inputUsage |= GPUTextureUsage.RENDER_ATTACHMENT // This is only necessary for the copyExternalImageToTexture codepath.
-    }
+    // Necessary for the copyExternalImageToTexture codepath. Always set: the input texture may be
+    // cached by an encode that did not need it and reused by one that does (the cache key does not
+    // include the usage).
+    inputUsage |= GPUTextureUsage.RENDER_ATTACHMENT
 
     const counter = this.#encodeCounter++
     this.#time("create input texture #" + counter)
